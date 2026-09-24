@@ -1,0 +1,57 @@
+public class DoorsBacklinkService {
+
+    private static final String JIRA_BASE_URL = "https://192.168.163.120:8443/jira";
+    private static final String DOORS_USER = "admin";
+    private static final String DOORS_PASS = "yourpassword";
+
+    public void createBacklink(String artifactUri, String issueKey) throws Exception {
+
+        // 1. Build the Jira issue OSLC URI (your change request endpoint)
+        String jiraIssueOslcUri = JIRA_BASE_URL 
+            + "/rest/oslc/1.0/changeRequests/" + issueKey;
+
+        // 2. GET current artifact RDF from DOORS
+        HttpClient client = buildHttpClient();
+        HttpGet get = new HttpGet(artifactUri);
+        get.setHeader("Accept", "application/rdf+xml");
+        get.setHeader("Authorization", basicAuth(DOORS_USER, DOORS_PASS));
+        get.setHeader("OSLC-Core-Version", "2.0");
+
+        HttpResponse getResponse = client.execute(get);
+        String rdfXml = EntityUtils.toString(getResponse.getEntity());
+        String etag = getResponse.getFirstHeader("ETag") != null 
+            ? getResponse.getFirstHeader("ETag").getValue() : null;
+
+        // 3. Parse RDF and add implementedBy triple
+        Model model = ModelFactory.createDefaultModel();
+        model.read(new StringReader(rdfXml), artifactUri, "RDF/XML");
+
+        Resource artifact = model.getResource(artifactUri);
+        Property implementedBy = model.createProperty(
+            "http://open-services.net/ns/rm#", "implementedBy");
+        Resource jiraIssue = model.createResource(jiraIssueOslcUri);
+        artifact.addProperty(implementedBy, jiraIssue);
+
+        // 4. Serialize back to RDF/XML
+        StringWriter writer = new StringWriter();
+        model.write(writer, "RDF/XML");
+        String updatedRdf = writer.toString();
+
+        // 5. PUT back to DOORS
+        HttpPut put = new HttpPut(artifactUri);
+        put.setHeader("Content-Type", "application/rdf+xml");
+        put.setHeader("Authorization", basicAuth(DOORS_USER, DOORS_PASS));
+        put.setHeader("OSLC-Core-Version", "2.0");
+        if (etag != null) {
+            put.setHeader("If-Match", etag);  // DOORS requires this for optimistic locking
+        }
+        put.setEntity(new StringEntity(updatedRdf, "UTF-8"));
+        client.execute(put);
+    }
+
+    private String basicAuth(String user, String pass) {
+        String credentials = user + ":" + pass;
+        return "Basic " + Base64.getEncoder().encodeToString(
+            credentials.getBytes(StandardCharsets.UTF_8));
+    }
+}
